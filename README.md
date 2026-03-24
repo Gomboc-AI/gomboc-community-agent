@@ -258,4 +258,3 @@ Built with:
 
 ---
 
-**Status:** Beta | **Last Updated:** 2026-03-24 | **Maintainer:** OpenClaw Community
