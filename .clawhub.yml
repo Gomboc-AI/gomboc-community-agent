@@ -1,9 +1,9 @@
 name: gomboc-security
 version: 0.1.0
 description: Deterministic security fixes for infrastructure code via Gomboc.ai Community Edition
-author: OpenClaw Community
+author: Gomboc AI, Inc.
 license: MIT
-repository: https://github.com/andrewpetecoleman-cloud/clawhub-gomboc-security
+repository: https://github.com/Gomboc-AI/gomboc-community-agent
 
 keywords:
   - security
