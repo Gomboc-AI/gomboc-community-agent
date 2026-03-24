@@ -1,0 +1,74 @@
+name: gomboc-security
+version: 0.1.0
+description: Deterministic security fixes for infrastructure code via Gomboc.ai Community Edition
+author: OpenClaw Community
+license: MIT
+repository: https://github.com/andrewpetecoleman-cloud/clawhub-gomboc-security
+
+keywords:
+  - security
+  - infrastructure
+  - terraform
+  - cloudformation
+  - remediation
+  - iac
+  - devops
+  - devsecops
+
+categories:
+  - security
+  - devops
+  - code-quality
+
+requirements:
+  - docker
+  - python3
+  - gomboc-account
+
+documentation:
+  main: SKILL.md
+  references:
+    - references/setup.md
+    - references/mcp-integration.md
+    - references/github-action.md
+
+scripts:
+  verify: bash scripts/verify-setup.sh
+  install: bash scripts/install.sh
+
+tags:
+  - ai-code-security
+  - deterministic
+  - merge-ready-fixes
+  - infrastructure-as-code
+  - community-edition
+
+status: beta
+
+# Required environment variables
+env:
+  - GOMBOC_PAT: Personal Access Token from app.gomboc.ai
+
+# Optional configuration
+config:
+  mcp_url: http://localhost:3100
+  policy: default
+  auto_fix: false
+
+# Integrations
+integrations:
+  - type: mcp
+    name: Gomboc MCP Server
+    url: http://localhost:3100
+    description: Interactive scanning and fix generation
+  
+  - type: github-action
+    name: GitHub Actions
+    description: CI/CD pipeline integration
+
+# ClawHub metadata
+clawhub:
+  org: andrewpetecoleman-cloud
+  tags:
+    - verified
+    - community-maintained
