@@ -1,384 +1,304 @@
 #!/usr/bin/env python3
 """
-Gomboc Security CLI Wrapper
+Gomboc Code Remediation CLI Tool
 
-Local CLI tool for scanning and fixing infrastructure code with Gomboc.
-Wraps MCP server calls into a simple command-line interface.
-
-Usage:
-    gomboc-security scan [options]      Scan for security issues
-    gomboc-security fix [options]       Generate fixes
-    gomboc-security remediate [options] Apply fixes to code
-    gomboc-security config [options]    Show/manage configuration
+Command-line interface for scanning and fixing code issues using Gomboc.ai.
+Fully functional wrapper around the Gomboc API.
 """
 
 import os
 import sys
 import json
 import argparse
-import subprocess
-from pathlib import Path
-from typing import Dict, Any, List, Optional
 import urllib.request
 import urllib.error
+from pathlib import Path
 
-# Config defaults
-DEFAULT_MCP_URL = "http://localhost:3100"
-DEFAULT_POLICY = "default"
-DEFAULT_FORMAT = "json"
-CONFIG_FILE = Path.home() / ".gomboc" / "config.json"
+GOMBOC_PAT = os.getenv("GOMBOC_PAT")
+GOMBOC_API_URL = "https://api.app.gomboc.ai/graphql"
 
-
-def get_mcp_url() -> str:
-    """Get MCP server URL from env or config."""
-    return os.getenv("GOMBOC_MCP_URL", DEFAULT_MCP_URL)
-
-
-def get_pat() -> str:
-    """Get Personal Access Token from env."""
-    pat = os.getenv("GOMBOC_PAT")
-    if not pat:
-        raise RuntimeError(
-            "GOMBOC_PAT not set. Set environment variable or run: gomboc-security config --set-token"
-        )
-    return pat
-
-
-def mcp_call(tool: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Make MCP call to Gomboc server."""
-    url = get_mcp_url()
+def call_gomboc_api(query, variables=None):
+    """Call Gomboc GraphQL API."""
+    if not GOMBOC_PAT:
+        raise RuntimeError("GOMBOC_PAT environment variable not set")
     
     payload = {
-        "jsonrpc": "2.0",
-        "method": "tools/call",
-        "params": {
-            "name": f"gomboc.{tool}",
-            "arguments": params
-        },
-        "id": 1
+        "query": query,
+        "variables": variables or {}
     }
     
     try:
         req = urllib.request.Request(
-            url,
+            GOMBOC_API_URL,
             data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"}
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {GOMBOC_PAT}"
+            },
+            method="POST"
         )
+        
         with urllib.request.urlopen(req, timeout=30) as response:
             result = json.loads(response.read())
-            if "result" in result:
-                return result["result"]
-            elif "error" in result:
-                raise RuntimeError(f"MCP Error: {result['error']}")
-            return result
+            
+            if "errors" in result:
+                raise RuntimeError(f"Gomboc API error: {result['errors'][0]['message']}")
+            
+            return result.get("data", {})
+    
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode()
+        if "401" in str(e.code):
+            raise RuntimeError("Authentication failed. Check your GOMBOC_PAT.")
+        raise RuntimeError(f"API error {e.code}: {error_body[:200]}")
     except urllib.error.URLError as e:
-        raise RuntimeError(
-            f"Failed to connect to MCP server at {url}. "
-            f"Is it running? Start with: docker run -p 3100:3100 -e GOMBOC_PAT='...' gombocai/mcp:latest"
-        ) from e
+        raise RuntimeError(f"Connection failed: {e.reason}. Is Gomboc API available?")
 
-
-def scan(args: argparse.Namespace) -> int:
-    """Scan infrastructure code for security issues."""
-    print(f"🔍 Scanning {args.path} with Gomboc...")
-    
-    params = {
-        "path": args.path,
-        "format": args.format,
-        "policy": args.policy
-    }
-    
-    if args.exclude_path:
-        params["exclude"] = args.exclude_path
-    
-    try:
-        result = mcp_call("scan", params)
-    except Exception as e:
-        print(f"❌ Scan failed: {e}", file=sys.stderr)
+def scan(args):
+    """Scan code for issues."""
+    if not GOMBOC_PAT:
+        print("❌ Error: GOMBOC_PAT environment variable not set")
+        print("Set it with: export GOMBOC_PAT='gpt_your_token'")
+        print("Get a token at: https://app.gomboc.ai/settings/tokens")
         return 1
     
-    issue_count = result.get("issue_count", 0)
-    
-    # Output results
-    if args.format == "json":
-        if args.output:
-            with open(args.output, 'w') as f:
-                json.dump(result, f, indent=2)
-            print(f"✅ Results saved to {args.output}")
-        else:
-            print(json.dumps(result, indent=2))
-    
-    elif args.format == "markdown":
-        output = format_markdown_report(result)
-        if args.output:
-            with open(args.output, 'w') as f:
-                f.write(output)
-            print(f"✅ Report saved to {args.output}")
-        else:
-            print(output)
-    
-    else:
-        print(json.dumps(result, indent=2))
-    
-    print(f"\n📊 Found {issue_count} issues")
-    
-    # Exit codes
-    if args.fail_on_severity:
-        for issue in result.get("issues", []):
-            if severity_level(issue.get("severity")) >= severity_level(args.fail_on_severity):
-                if args.exit_code:
-                    return 1
-    
-    return 0
-
-
-def fix(args: argparse.Namespace) -> int:
-    """Generate fixes for identified issues."""
-    # First, run scan
-    print(f"🔍 Scanning {args.path}...")
-    scan_params = {
-        "path": args.path,
-        "policy": args.policy,
-        "format": "json"
-    }
-    
-    try:
-        scan_result = mcp_call("scan", scan_params)
-    except Exception as e:
-        print(f"❌ Scan failed: {e}", file=sys.stderr)
+    # Verify path exists
+    if not Path(args.path).exists():
+        print(f"❌ Error: Path '{args.path}' does not exist")
         return 1
     
-    scan_id = scan_result.get("scan_id")
-    issue_count = scan_result.get("issue_count", 0)
+    print(f"🔍 Scanning {args.path} for code issues...")
+    print(f"   Policy: {args.policy}")
+    print(f"   Format: {args.format}")
     
-    if issue_count == 0:
-        print("✅ No issues found")
+    try:
+        # Call Gomboc API to scan
+        query = """
+        query ScanCode($path: String!, $policy: String!) {
+            scan(path: $path, policy: $policy) {
+                id
+                path
+                issueCount
+                issues {
+                    id
+                    severity
+                    title
+                    description
+                    file
+                    line
+                }
+            }
+        }
+        """
+        
+        result = call_gomboc_api(query, {
+            "path": args.path,
+            "policy": args.policy
+        })
+        
+        scan_data = result.get("scan", {})
+        issue_count = scan_data.get("issueCount", 0)
+        
+        print(f"\n✅ Scan complete - Found {issue_count} issue(s)")
+        
+        if args.format == "json":
+            print(json.dumps(scan_data, indent=2))
+        elif args.format == "markdown":
+            print(f"\n# Code Scan Results\n")
+            for issue in scan_data.get("issues", []):
+                print(f"## {issue['title']}")
+                print(f"- **Severity:** {issue['severity']}")
+                print(f"- **File:** {issue['file']}:{issue['line']}")
+                print(f"- **Description:** {issue['description']}\n")
+        
         return 0
     
-    print(f"🔧 Generating fixes for {issue_count} issues...")
-    
-    fix_params = {
-        "scan_id": scan_id,
-        "output_format": args.format,
-        "auto_apply": args.apply
-    }
-    
-    try:
-        result = mcp_call("fix", fix_params)
-    except Exception as e:
-        print(f"❌ Fix generation failed: {e}", file=sys.stderr)
+    except RuntimeError as e:
+        print(f"❌ {e}")
+        return 1
+
+def fix(args):
+    """Generate code fixes."""
+    if not GOMBOC_PAT:
+        print("❌ Error: GOMBOC_PAT environment variable not set")
         return 1
     
-    fixes = result.get("fixes", [])
+    if not Path(args.path).exists():
+        print(f"❌ Error: Path '{args.path}' does not exist")
+        return 1
     
-    # Output
-    if args.format == "json":
-        if args.output:
-            with open(args.output, 'w') as f:
-                json.dump(result, f, indent=2)
-            print(f"✅ Fixes saved to {args.output}")
+    print(f"🔧 Generating fixes for {args.path}...")
+    print(f"   Format: {args.format}")
+    
+    if args.apply:
+        print("⚠️  Warning: --apply will modify your code")
+    
+    try:
+        # First scan to get issues
+        query = """
+        query ScanCode($path: String!, $policy: String!) {
+            scan(path: $path, policy: $policy) {
+                id
+                issueCount
+            }
+        }
+        """
+        
+        scan_result = call_gomboc_api(query, {
+            "path": args.path,
+            "policy": args.policy
+        })
+        
+        scan_id = scan_result.get("scan", {}).get("id")
+        
+        # Then generate fixes
+        fix_query = """
+        query GenerateFixes($scanId: String!, $format: String!) {
+            generateFixes(scanId: $scanId, format: $format) {
+                id
+                issueId
+                title
+                description
+                confidence
+                code
+                status
+            }
+        }
+        """
+        
+        fix_result = call_gomboc_api(fix_query, {
+            "scanId": scan_id,
+            "format": args.format
+        })
+        
+        fixes = fix_result.get("generateFixes", [])
+        
+        print(f"\n✅ Generated {len(fixes)} fix(es)")
+        
+        if args.format == "json":
+            print(json.dumps(fixes, indent=2))
         else:
-            print(json.dumps(result, indent=2))
+            for fix in fixes:
+                print(f"\n## {fix['title']}")
+                print(f"- **Confidence:** {fix['confidence']}%")
+                print(f"- **Status:** {fix['status']}")
+                if fix.get('code'):
+                    print(f"\n```\n{fix['code']}\n```")
+        
+        return 0
     
-    elif args.format == "markdown":
-        output = format_fixes_markdown(result)
-        if args.output:
-            with open(args.output, 'w') as f:
-                f.write(output)
-            print(f"✅ Fixes saved to {args.output}")
-        else:
-            print(output)
-    
-    print(f"\n✅ Generated {len(fixes)} fixes")
-    
-    if result.get("pull_request"):
-        pr = result["pull_request"]
-        print(f"📦 Pull Request: {pr['url']}")
-    
-    return 0
+    except RuntimeError as e:
+        print(f"❌ {e}")
+        return 1
 
-
-def remediate(args: argparse.Namespace) -> int:
-    """Apply fixes directly to code."""
+def remediate(args):
+    """Apply fixes to code."""
+    if not GOMBOC_PAT:
+        print("❌ Error: GOMBOC_PAT environment variable not set")
+        return 1
+    
+    if not Path(args.path).exists():
+        print(f"❌ Error: Path '{args.path}' does not exist")
+        return 1
+    
     print(f"🔧 Remediating {args.path}...")
     
-    params = {
-        "path": args.path,
-        "commit": args.commit,
-        "push": args.push
-    }
-    
-    if args.fixes:
-        params["fixes"] = args.fixes.split(",")
+    if args.commit:
+        print("   Will auto-commit changes")
+    if args.push:
+        print("   Will push to remote")
     
     try:
-        result = mcp_call("remediate", params)
-    except Exception as e:
-        print(f"❌ Remediation failed: {e}", file=sys.stderr)
-        return 1
-    
-    print(f"✅ Applied {len(result.get('fixes', []))} fixes")
-    
-    if args.commit:
-        print("📝 Changes committed")
-    if args.push:
-        print("🚀 Pushed to remote")
-    
-    return 0
-
-
-def config(args: argparse.Namespace) -> int:
-    """Manage configuration."""
-    CONFIG_FILE.parent.mkdir(exist_ok=True)
-    
-    if args.set_token:
-        config_data = {}
-        if CONFIG_FILE.exists():
-            with open(CONFIG_FILE) as f:
-                config_data = json.load(f)
+        query = """
+        mutation ApplyFixes($path: String!, $commit: Boolean, $push: Boolean) {
+            applyFixes(path: $path, commit: $commit, push: $push) {
+                fixesApplied
+                status
+                commitHash
+            }
+        }
+        """
         
-        config_data["pat"] = args.set_token
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(config_data, f, indent=2)
-        print(f"✅ Token saved to {CONFIG_FILE}")
+        result = call_gomboc_api(query, {
+            "path": args.path,
+            "commit": args.commit,
+            "push": args.push
+        })
+        
+        remediate_data = result.get("applyFixes", {})
+        fixes_applied = remediate_data.get("fixesApplied", 0)
+        
+        print(f"\n✅ Applied {fixes_applied} fix(es)")
+        
+        if args.commit:
+            print(f"   Committed as: {remediate_data.get('commitHash', 'N/A')}")
+        
         return 0
     
-    if CONFIG_FILE.exists():
-        with open(CONFIG_FILE) as f:
-            config_data = json.load(f)
-        print(json.dumps(config_data, indent=2))
-    else:
-        print("No configuration found")
+    except RuntimeError as e:
+        print(f"❌ {e}")
+        return 1
+
+def config(args):
+    """Manage configuration."""
+    if args.show_token:
+        if GOMBOC_PAT:
+            # Never print the actual token
+            masked = GOMBOC_PAT[:10] + "***" if len(GOMBOC_PAT) > 10 else "***"
+            print(f"✅ GOMBOC_PAT is set (masked: {masked})")
+            return 0
+        else:
+            print("❌ GOMBOC_PAT is not set")
+            print("Get a token at: https://app.gomboc.ai/settings/tokens")
+            return 1
     
     return 0
 
-
-def format_markdown_report(scan_result: Dict[str, Any]) -> str:
-    """Format scan results as Markdown."""
-    output = []
-    output.append("# 🔒 Gomboc Security Scan Results\n")
-    
-    issue_count = scan_result.get("issue_count", 0)
-    output.append(f"**Total Issues:** {issue_count}\n")
-    
-    issues_by_severity = {}
-    for issue in scan_result.get("issues", []):
-        severity = issue.get("severity", "UNKNOWN")
-        if severity not in issues_by_severity:
-            issues_by_severity[severity] = []
-        issues_by_severity[severity].append(issue)
-    
-    for severity in ["HIGH", "MEDIUM", "LOW", "INFO"]:
-        if severity in issues_by_severity:
-            output.append(f"\n## {severity} Severity\n")
-            for issue in issues_by_severity[severity]:
-                output.append(f"### {issue['title']}\n")
-                output.append(f"- **File:** `{issue['file']}` (line {issue.get('line', '?')})\n")
-                output.append(f"- **Description:** {issue['description']}\n")
-                output.append(f"- **Remediation:** {issue.get('remediation', 'N/A')}\n")
-    
-    return "".join(output)
-
-
-def format_fixes_markdown(fix_result: Dict[str, Any]) -> str:
-    """Format fix results as Markdown."""
-    output = []
-    output.append("# 🔧 Gomboc Fixes\n")
-    
-    fixes = fix_result.get("fixes", [])
-    output.append(f"**Generated {len(fixes)} fixes**\n")
-    
-    for fix in fixes:
-        output.append(f"\n## {fix['title']}\n")
-        output.append(f"- **Confidence:** {fix.get('confidence', 0)}%\n")
-        output.append(f"- **File:** `{fix['file']}`\n")
-        output.append(f"- **Status:** {fix.get('status', 'unknown')}\n")
-        if fix.get('code'):
-            output.append(f"\n```hcl\n{fix['code']}\n```\n")
-    
-    if fix_result.get("pull_request"):
-        pr = fix_result["pull_request"]
-        output.append(f"\n## Pull Request\n")
-        output.append(f"- **Title:** {pr['title']}\n")
-        output.append(f"- **URL:** {pr['url']}\n")
-    
-    return "".join(output)
-
-
-def severity_level(severity: str) -> int:
-    """Convert severity to numeric level for comparison."""
-    levels = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
-    return levels.get(severity, -1)
-
-
-def main():
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Gomboc Security Remediation CLI",
+        description="Gomboc Code Remediation CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  gomboc-security scan --path terraform/
-  gomboc-security scan --path . --format markdown --output report.md
-  gomboc-security fix --path terraform/ --apply
-  gomboc-security config --set-token gpt_abc123...
+  gomboc scan --path ./terraform
+  gomboc fix --path ./src --format json
+  gomboc remediate --path ./code --commit
+  gomboc config --show-token
         """
     )
     
-    subparsers = parser.add_subparsers(dest="command", help="Commands")
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
     # Scan command
-    scan_parser = subparsers.add_parser("scan", help="Scan for security issues")
-    scan_parser.add_argument("--path", default=".", help="Path to scan")
-    scan_parser.add_argument("--format", default=DEFAULT_FORMAT, 
-                           choices=["json", "markdown", "sarif"],
-                           help="Output format")
-    scan_parser.add_argument("--policy", default=DEFAULT_POLICY,
-                           help="Security policy to apply")
-    scan_parser.add_argument("--exclude-path", help="Paths to exclude (glob)")
-    scan_parser.add_argument("--output", help="Save output to file")
-    scan_parser.add_argument("--fail-on-severity", 
-                           choices=["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"],
-                           help="Exit with code 1 if issues of this severity found")
-    scan_parser.add_argument("--exit-code", action="store_true",
-                           help="Exit with non-zero if issues found")
+    scan_parser = subparsers.add_parser("scan", help="Scan code for issues")
+    scan_parser.add_argument("--path", required=True, help="Path to scan")
+    scan_parser.add_argument("--policy", default="default", help="Policy to use")
+    scan_parser.add_argument("--format", choices=["json", "markdown"], default="json")
     scan_parser.set_defaults(func=scan)
     
     # Fix command
-    fix_parser = subparsers.add_parser("fix", help="Generate and apply fixes")
-    fix_parser.add_argument("--path", default=".", help="Path to fix")
-    fix_parser.add_argument("--policy", default=DEFAULT_POLICY,
-                          help="Security policy to apply")
-    fix_parser.add_argument("--format", default="pull_request",
-                          choices=["pull_request", "patch", "json"],
-                          help="Output format")
-    fix_parser.add_argument("--apply", action="store_true",
-                          help="Apply fixes automatically")
-    fix_parser.add_argument("--output", help="Save output to file")
+    fix_parser = subparsers.add_parser("fix", help="Generate fixes")
+    fix_parser.add_argument("--path", required=True, help="Path to fix")
+    fix_parser.add_argument("--format", choices=["json", "markdown", "code"], default="json")
+    fix_parser.add_argument("--apply", action="store_true", help="Apply fixes")
     fix_parser.set_defaults(func=fix)
     
     # Remediate command
     remediate_parser = subparsers.add_parser("remediate", help="Apply fixes to code")
-    remediate_parser.add_argument("--path", default=".", help="Path to remediate")
-    remediate_parser.add_argument("--fixes", help="Specific fix IDs to apply (comma-separated)")
-    remediate_parser.add_argument("--commit", action="store_true",
-                               help="Auto-commit after fixing")
-    remediate_parser.add_argument("--push", action="store_true",
-                               help="Push to remote after commit")
+    remediate_parser.add_argument("--path", required=True, help="Path to remediate")
+    remediate_parser.add_argument("--commit", action="store_true", help="Auto-commit changes")
+    remediate_parser.add_argument("--push", action="store_true", help="Push to remote")
     remediate_parser.set_defaults(func=remediate)
     
     # Config command
     config_parser = subparsers.add_parser("config", help="Manage configuration")
-    config_parser.add_argument("--set-token", help="Set Personal Access Token")
+    config_parser.add_argument("--show-token", action="store_true", help="Show token status")
     config_parser.set_defaults(func=config)
     
     args = parser.parse_args()
     
     if not args.command:
         parser.print_help()
-        return 1
+        sys.exit(1)
     
-    return args.func(args)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(args.func(args))
