@@ -1,7 +1,7 @@
 name: gomboc-security
 version: 0.2.0
 description: Deterministic code remediation for any codebase - fix issues with 94%+ accuracy using Gomboc.ai
-author: OpenClaw Community
+author: Gomboc AI, Inc.
 license: MIT
 repository: https://github.com/Gomboc-AI/gomboc-community-agent
 homepage: https://www.gomboc.ai
@@ -58,13 +58,13 @@ environment:
     required: true
     sensitive: true
     example: "gpt_abc123..."
-  
+
   GOMBOC_MCP_URL:
     description: MCP server URL (for agent integration)
     required: false
     default: "http://localhost:3100"
     example: "http://localhost:3100"
-  
+
   GOMBOC_POLICY:
     description: Security policy to apply
     required: false
@@ -91,7 +91,7 @@ integrations:
     url: http://localhost:3100
     description: Interactive scanning and fix generation for agents
     docker: gombocai/mcp:latest
-  
+
   - type: github-action
     name: GitHub Actions
     description: CI/CD pipeline integration for continuous remediation
