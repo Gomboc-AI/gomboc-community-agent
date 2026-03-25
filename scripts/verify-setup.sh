@@ -1,94 +1,84 @@
 #!/bin/bash
-
-# Gomboc Setup Verification Script
-# Checks prerequisites and configuration for using Gomboc
+# Verify Gomboc skill setup
 
 set -e
 
-PASS="✅"
-FAIL="❌"
-WARN="⚠️"
-
-echo "🔍 Verifying Gomboc setup..."
+echo "🔍 Verifying Gomboc Skill Setup"
+echo "================================"
 echo ""
 
-# Check GOMBOC_PAT
+# Check token
 if [ -z "$GOMBOC_PAT" ]; then
-    echo "$FAIL GOMBOC_PAT is not set"
-    echo "   Set it with: export GOMBOC_PAT='your-token-here'"
-else
-    echo "$PASS GOMBOC_PAT is set"
+    echo "❌ GOMBOC_PAT not set"
+    echo "   Get a token at: https://app.gomboc.ai/settings/tokens"
+    exit 1
 fi
 
-# Check Docker
-if ! command -v docker &> /dev/null; then
-    echo "$FAIL Docker is not installed"
-    echo "   Install from: https://www.docker.com/products/docker-desktop"
-else
-    echo "$PASS Docker is installed"
-    
-    # Check if Docker daemon is running
-    if ! docker ps &> /dev/null; then
-        echo "$FAIL Docker daemon is not running"
-        echo "   Start Docker Desktop or Docker Engine"
-    else
-        echo "$PASS Docker daemon is running"
-    fi
-    
-    # Check if Gomboc image is available
-    if docker image inspect gombocai/mcp:latest &> /dev/null; then
-        echo "$PASS Gomboc MCP image is available locally"
-    else
-        echo "$WARN Gomboc MCP image not found locally"
-        echo "   It will be pulled automatically on first run"
-    fi
-fi
-
-# Check port 3100 availability
-if command -v lsof &> /dev/null; then
-    if ! lsof -i :3100 &> /dev/null; then
-        echo "$PASS Port 3100 is available"
-    else
-        echo "$WARN Port 3100 is already in use"
-        echo "   Use a different port or stop the existing service"
-    fi
-else
-    echo "$WARN lsof not found, skipping port check"
-fi
+echo "✅ GOMBOC_PAT is set"
 
 # Check Python
 if ! command -v python3 &> /dev/null; then
-    echo "$FAIL Python 3 is not installed"
-else
-    echo "$PASS Python 3 is installed"
-    
-    # Check required packages
-    if python3 -c "import urllib.request" 2>/dev/null; then
-        echo "$PASS Required Python modules are available"
-    else
-        echo "$WARN Some Python modules may be missing"
-    fi
+    echo "❌ Python 3 is required"
+    exit 1
 fi
 
-# Check CLI script
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-if [ -f "$SCRIPT_DIR/cli-wrapper.py" ]; then
-    echo "$PASS CLI wrapper script found"
+echo "✅ Python 3 found: $(python3 --version)"
+
+# Check CLI exists
+if [ ! -f "scripts/cli-wrapper.py" ]; then
+    echo "❌ scripts/cli-wrapper.py not found"
+    exit 1
+fi
+
+echo "✅ CLI wrapper found"
+
+# Test token with API
+echo ""
+echo "🌐 Testing Gomboc API connection..."
+
+RESPONSE=$(python3 << 'PYEOF'
+import urllib.request
+import urllib.error
+import json
+import os
+
+token = os.getenv("GOMBOC_PAT")
+url = "https://api.app.gomboc.ai/graphql"
+
+try:
+    query = '{"query": "{ __typename }"}'
+    req = urllib.request.Request(
+        url,
+        data=query.encode(),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}"
+        },
+        method="POST"
+    )
     
-    if [ -x "$SCRIPT_DIR/cli-wrapper.py" ]; then
-        echo "$PASS CLI wrapper is executable"
-    else
-        echo "$WARN CLI wrapper is not executable"
-        echo "   Make it executable with: chmod +x $SCRIPT_DIR/cli-wrapper.py"
-    fi
+    with urllib.request.urlopen(req, timeout=10) as response:
+        result = json.loads(response.read())
+        if "errors" in result:
+            print("FAIL")
+        else:
+            print("OK")
+except Exception as e:
+    print(f"FAIL")
+PYEOF
+)
+
+if [ "$RESPONSE" = "OK" ]; then
+    echo "✅ API connection successful"
 else
-    echo "$FAIL CLI wrapper script not found"
+    echo "❌ API connection failed"
+    echo "   Check your GOMBOC_PAT token"
+    exit 1
 fi
 
 echo ""
-echo "✅ Setup verification complete"
+echo "================================"
+echo "✅ Setup verification complete!"
 echo ""
-echo "Next steps:"
-echo "1. Start the MCP server: docker-compose up -d"
-echo "2. Verify server is running: curl http://localhost:3100/health"
-echo "3. Run a scan: python3 scripts/cli-wrapper.py scan --path ."
+echo "You're ready to use Gomboc:"
+echo "  python scripts/cli-wrapper.py scan --path ./src"

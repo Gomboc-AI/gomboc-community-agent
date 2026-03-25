@@ -1,53 +1,27 @@
 version: '3.8'
 
 services:
-  # Gomboc MCP Server
   gomboc-mcp:
     image: gombocai/mcp:latest
     container_name: gomboc-mcp-server
     ports:
       - "3100:3100"
     environment:
-      GOMBOC_PAT: ${GOMBOC_PAT}
-      LOG_LEVEL: info
+      - GOMBOC_PAT=${GOMBOC_PAT}
+      - MCP_PORT=3100
+      - LOG_LEVEL=info
+    volumes:
+      - ./:/workspace:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3100/health"]
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 10s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
     networks:
-      - gomboc-net
-    volumes:
-      # Mount workspace for scanning (optional)
-      - ${WORKSPACE_PATH:-.}:/workspace:ro
-    labels:
-      description: "Gomboc MCP Server for security scanning"
+      - gomboc
 
 networks:
-  gomboc-net:
+  gomboc:
     driver: bridge
-
-# Usage:
-# 
-# 1. Set environment variable:
-#    export GOMBOC_PAT="your-token-here"
-#
-# 2. Start the stack:
-#    docker-compose up -d
-#
-# 3. Verify it's running:
-#    curl http://localhost:3100/health
-#
-# 4. Stop the stack:
-#    docker-compose down
-#
-# 5. View logs:
-#    docker-compose logs -f gomboc-mcp
-#
-# Notes:
-# - The GOMBOC_PAT environment variable is required
-# - The MCP server will be available at http://localhost:3100
-# - Container automatically restarts on failure
-# - Health checks verify the service is running
